@@ -212,14 +212,14 @@ def main() -> None:
     t = threading.Thread(target=_stdin_reader, daemon=True)
     t.start()
 
-    # ── Audio capture + inference loop ──────────────────────────────────────
-    audio_buffer = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+    import queue
+    audio_queue = queue.Queue()
 
     def audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
-        """sounddevice callback — copies mic data into audio_buffer."""
+        """sounddevice callback — queues mic data."""
         if status:
             log.warning("audio status", extra={"status": str(status)})
-        audio_buffer[:] = indata[:, 0]
+        audio_queue.put(indata.copy())
 
     log.info("opening audio stream and listening for wake phrase")
 
@@ -236,6 +236,9 @@ def main() -> None:
                 # Pipeline is active — suspend and release audio device.
                 if stream.active:
                     stream.stop()
+                # Clear out any stale audio
+                while not audio_queue.empty():
+                    audio_queue.get_nowait()
                 time.sleep(0.05)
                 continue
 
@@ -243,8 +246,14 @@ def main() -> None:
             if not stream.active:
                 stream.start()
 
-            # Run inference on the latest chunk.
-            prediction = oww.predict(audio_buffer)
+            try:
+                # Get the next chunk of audio, blocking for up to 0.1s
+                chunk = audio_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            # Run inference on the chunk.
+            prediction = oww.predict(chunk[:, 0])
             score = prediction.get(model_key, 0.0)
 
             if score >= threshold:
@@ -264,11 +273,6 @@ def main() -> None:
                 # Reset model state to avoid immediate re-triggering when
                 # inference resumes after RESUME.
                 oww.reset()
-
-            # Small sleep to avoid spinning the CPU at full tilt between chunks.
-            # sounddevice fills audio_buffer via callback; we just need to
-            # check it at a reasonable rate.
-            time.sleep(0.01)
 
     log.info("exiting")
 
