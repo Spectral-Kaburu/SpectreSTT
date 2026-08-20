@@ -87,6 +87,11 @@ type Config struct {
 
 	// ─── Wake word ────────────────────────────────────────────────────────────
 
+	// WakeWordPythonPath is the path to the Python executable.
+	// Can be set to a virtual environment python, e.g., "/opt/spectrestt/venv/bin/python".
+	// Defaults to "python3" (system python).
+	WakeWordPythonPath string `json:"wakeword_python_path"`
+
 	// WakeWordSidecarPath is the path to the Python sidecar script.
 	// Example: "/opt/spectrestt/sidecars/wakeword/main.py"
 	WakeWordSidecarPath string `json:"wakeword_sidecar_path"`
@@ -145,6 +150,7 @@ func Default() *Config {
 		VADMode:                    3,
 		VADSilenceThresholdMs:      800,
 		VADMaxUtteranceMs:          30_000,
+		WakeWordPythonPath:         "python3",
 		WakeWordSidecarPath:        "",
 		WakeWordModelPath:          "",
 		WakeWordThreshold:          0.5,
@@ -201,6 +207,9 @@ func (c *Config) Validate() error {
 	}
 	if c.AudioSampleRate != 16_000 {
 		return fmt.Errorf("audio_sample_rate must be 16000; got %d", c.AudioSampleRate)
+	}
+	if c.WakeWordPythonPath == "" {
+		return fmt.Errorf("wakeword_python_path must be set")
 	}
 	if c.WakeWordSidecarPath == "" {
 		return fmt.Errorf("wakeword_sidecar_path must be set")

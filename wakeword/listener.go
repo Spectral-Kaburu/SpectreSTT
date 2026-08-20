@@ -29,9 +29,11 @@ package wakeword
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
@@ -39,24 +41,28 @@ import (
 
 // Listener spawns and manages the openWakeWord Python sidecar.
 type Listener struct {
+	pythonPath  string
 	sidecarPath string
 	modelPath   string // may be "" — sidecar uses its placeholder model
 	threshold   float64
 
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	paused bool
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	paused    bool
+	stderrBuf bytes.Buffer // accumulates sidecar stderr for crash diagnostics
 }
 
 // New creates a Listener. Start() must be called to launch the sidecar.
 //
+// pythonPath: absolute path to the Python executable (e.g., in a venv) or "python3".
 // sidecarPath: absolute path to sidecars/wakeword/main.py.
 // modelPath: path to an openWakeWord-compatible .onnx model file.
 //            Pass "" to use the sidecar's built-in placeholder.
 // threshold: detection score threshold (0–1). Default 0.5.
-func New(sidecarPath, modelPath string, threshold float64) *Listener {
+func New(pythonPath, sidecarPath, modelPath string, threshold float64) *Listener {
 	return &Listener{
+		pythonPath:  pythonPath,
 		sidecarPath: sidecarPath,
 		modelPath:   modelPath,
 		threshold:   threshold,
@@ -79,7 +85,7 @@ func (l *Listener) Start(ctx context.Context) (<-chan struct{}, error) {
 	}
 	args = append(args, "--threshold", fmt.Sprintf("%.4f", l.threshold))
 
-	cmd := exec.CommandContext(ctx, "python3", args...)
+	cmd := exec.CommandContext(ctx, l.pythonPath, args...)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -88,6 +94,10 @@ func (l *Listener) Start(ctx context.Context) (<-chan struct{}, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("wakeword: stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("wakeword: stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -98,22 +108,48 @@ func (l *Listener) Start(ctx context.Context) (<-chan struct{}, error) {
 	l.cmd = cmd
 	l.stdin = stdinPipe
 	l.paused = false
+	l.stderrBuf.Reset()
 	l.mu.Unlock()
 
 	detections := make(chan struct{})
 
-	go l.readLoop(stdoutPipe, detections, cmd)
+	go l.readLoop(stdoutPipe, stderrPipe, detections, cmd)
 
 	return detections, nil
 }
 
 // readLoop reads lines from the sidecar's stdout and forwards DETECTED
 // events to the detections channel. Closes the channel when the sidecar exits.
-func (l *Listener) readLoop(r io.Reader, detections chan<- struct{}, cmd *exec.Cmd) {
+//
+// stderrPipe is drained concurrently so the sidecar never blocks on stderr
+// writes. On an unexpected exit the captured stderr and process exit error are
+// logged via slog so the developer sees the actual Python traceback.
+func (l *Listener) readLoop(stdout io.Reader, stderr io.Reader, detections chan<- struct{}, cmd *exec.Cmd) {
 	defer close(detections)
-	defer cmd.Wait() //nolint:errcheck — sidecar exit is handled by channel close
 
-	scanner := bufio.NewScanner(r)
+	// Drain stderr in a background goroutine so the sidecar can never block
+	// trying to write to it. Output is forwarded line-by-line through slog so
+	// it appears in the main process log alongside Go messages.
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			// Forward sidecar stderr as INFO; errors inside the sidecar will
+			// surface through the exit-code path below.
+			slog.Info("wakeword sidecar", "msg", line)
+
+			// Also buffer for the crash-diagnostic path.
+			l.mu.Lock()
+			l.stderrBuf.WriteString(line)
+			l.stderrBuf.WriteByte('\n')
+			l.mu.Unlock()
+		}
+	}()
+
+	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "DETECTED" {
@@ -127,6 +163,25 @@ func (l *Listener) readLoop(r io.Reader, detections chan<- struct{}, cmd *exec.C
 			}
 		}
 		// Other lines (e.g. debug output from the sidecar) are silently ignored.
+	}
+
+	// stdout EOF — sidecar process is done. Wait to collect the exit status.
+	exitErr := cmd.Wait()
+	if exitErr != nil {
+		// Sidecar crashed or was killed with a non-zero exit code.
+		// Log the real stderr so the developer can see the Python traceback.
+		l.mu.Lock()
+		captured := strings.TrimSpace(l.stderrBuf.String())
+		l.mu.Unlock()
+
+		if captured != "" {
+			slog.Error("wakeword sidecar crashed",
+				"exit_error", exitErr,
+				"stderr", captured,
+			)
+		} else {
+			slog.Error("wakeword sidecar crashed", "exit_error", exitErr)
+		}
 	}
 }
 

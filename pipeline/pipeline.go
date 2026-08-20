@@ -63,6 +63,7 @@ func New(cfg *config.Config) *Pipeline {
 	)
 
 	listener := wakeword.New(
+		cfg.WakeWordPythonPath,
 		cfg.WakeWordSidecarPath,
 		cfg.WakeWordModelPath,
 		cfg.WakeWordThreshold,
