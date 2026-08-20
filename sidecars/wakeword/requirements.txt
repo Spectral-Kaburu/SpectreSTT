@@ -1,0 +1,23 @@
+# SpectreSTT — openWakeWord sidecar dependencies
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# System requirement: PortAudio (for sounddevice)
+#   Ubuntu/Debian: sudo apt install libportaudio2
+#   Arch:          sudo pacman -S portaudio
+#   macOS:         brew install portaudio
+
+# openWakeWord — wake word detection library (Apache 2.0)
+# Pretrained models bundled with it are CC-BY-NC-SA 4.0 (non-commercial).
+# See sidecars/wakeword/main.py for the full license caveat.
+openwakeword>=0.6.0
+
+# ONNX runtime — backend for openWakeWord model inference
+onnxruntime>=1.17.0
+
+# Audio capture
+sounddevice>=0.4.6
+
+# numpy — audio buffer manipulation
+numpy>=1.24.0
