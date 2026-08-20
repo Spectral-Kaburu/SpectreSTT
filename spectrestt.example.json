@@ -1,0 +1,32 @@
+{
+  "_comment": "Copy to spectrestt.json and fill in your deployment values.",
+
+  "aximo_host": "127.0.0.1",
+  "aximo_port": 8080,
+
+  "aximo_compose_path": "/path/to/your/aximo/docker-compose.yml",
+
+  "aximo_startup_timeout_ms": 40000,
+  "aximo_startup_poll_interval_ms": 1000,
+
+  "aximo_inference_timeout_ms": 30000,
+
+  "aximo_readiness_cache_ttl_ms": 1800000,
+
+  "stt_retry_delay_ms": 400,
+
+  "vad_frame_ms": 30,
+  "vad_mode": 3,
+  "vad_silence_threshold_ms": 800,
+  "vad_max_utterance_ms": 30000,
+
+  "wakeword_sidecar_path": "/path/to/SpectreSTT/sidecars/wakeword/main.py",
+  "wakeword_model_path": "",
+  "wakeword_threshold": 0.5,
+
+  "socket_path": "/run/spectrestt/transcripts.sock",
+
+  "tts_socket_path": "",
+
+  "audio_sample_rate": 16000
+}

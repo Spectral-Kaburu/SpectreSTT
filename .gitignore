@@ -1,0 +1,33 @@
+# Go
+/spectrestt
+*.exe
+*.test
+*.out
+vendor/
+go.sum
+
+# Config (keep example, ignore real config)
+spectrestt.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+sidecars/wakeword/.venv/
+*.egg-info/
+
+# openWakeWord model files (download separately)
+sidecars/wakeword/models/
+
+# Runtime
+*.sock
+*.pid
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
