@@ -46,8 +46,9 @@ type Pipeline struct {
 // New constructs a Pipeline from the given config.
 // All components are created here; Start() activates them.
 func New(cfg *config.Config) *Pipeline {
-	// Low-level Aximo HTTP client (shared by lifecycle and provider).
-	client := stt.NewAximoClient(cfg.AximoBaseURL(), cfg.AximoInferenceTimeout())
+	// Low-level Aximo HTTP client used by the lifecycle manager for
+	// health-check polling during startup.
+	lifecycleClient := stt.NewAximoClient(cfg.AximoBaseURL(), cfg.AximoInferenceTimeout())
 
 	provider := stt.NewAximoHTTPProvider(
 		cfg.AximoBaseURL(),
@@ -57,17 +58,17 @@ func New(cfg *config.Config) *Pipeline {
 
 	lifecycle := stt.NewAximoLifecycle(
 		cfg.AximoComposePath,
-		client,
+		lifecycleClient,
 		cfg.AximoStartupTimeout(),
 		cfg.AximoStartupPollInterval(),
 	)
 
-	listener := wakeword.New(
-		cfg.WakeWordPythonPath,
-		cfg.WakeWordSidecarPath,
-		cfg.WakeWordModelPath,
-		cfg.WakeWordThreshold,
-	)
+	listener := wakeword.New(wakeword.Config{
+		PythonPath:  cfg.WakeWordPythonPath,
+		SidecarPath: cfg.WakeWordSidecarPath,
+		ModelPath:   cfg.WakeWordModelPath,
+		Threshold:   cfg.WakeWordThreshold,
+	})
 
 	sockSrv := socket.New(cfg.SocketPath)
 	notifier := notify.New(cfg.TTSSocketPath)
@@ -80,6 +81,13 @@ func New(cfg *config.Config) *Pipeline {
 		sockSrv:   sockSrv,
 		notifier:  notifier,
 	}
+}
+
+// Listener returns the underlying wakeword [wakeword.Listener] so that
+// external systems can coordinate audio device ownership or monitor
+// detection state directly.
+func (p *Pipeline) Listener() *wakeword.Listener {
+	return p.listener
 }
 
 // Start brings up all subsystems and runs the capture-transcribe loop until
