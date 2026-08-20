@@ -5,13 +5,13 @@ SpectreSTT — openWakeWord sidecar for "Hey Linus" detection.
 IPC protocol (line-oriented, via stdin/stdout):
 
   stdout → Go:
-    "DETECTED\n"  — wake phrase scored above threshold.
+    "DETECTED\\n"  — wake phrase scored above threshold.
                     The audio stream is stopped *before* this line is written,
                     so the Go PortAudio capturer can open the device immediately.
 
   stdin ← Go:
-    "PAUSE\n"     — suspend inference and keep the audio stream closed.
-    "RESUME\n"    — reopen the audio stream and restart inference.
+    "PAUSE\\n"     — suspend inference and keep the audio stream closed.
+    "RESUME\\n"    — reopen the audio stream and restart inference.
 
 Wake word model:
   ⚠ STUB: "Hey Linus" requires a custom-trained openWakeWord model.
@@ -38,24 +38,105 @@ License note:
 """
 
 import argparse
+import logging
 import sys
 import threading
 import time
 
 import numpy as np
 import sounddevice as sd
+import openwakeword.utils
+openwakeword.utils.download_models()  # check current signature — may accept a framework or model-list arg
 
 try:
     from openwakeword.model import Model as OWWModel
+    import openwakeword.utils
+    openwakeword.utils.download_models()  # check current signature — may accept a framework or model-list arg
 except ImportError:
-    print("ERROR: openwakeword not installed. Run: pip install -r requirements.txt", flush=True)
+    # Print directly to stderr before the logger is set up — this is the very
+    # first thing that can go wrong and we want it visible regardless.
+    print(
+        "\033[1;31mERROR\033[0m  openwakeword not installed. "
+        "Run: pip install -r requirements.txt",
+        file=sys.stderr,
+        flush=True,
+    )
     sys.exit(1)
+
+
+INSTRUCT_LEVEL = 25
+logging.addLevelName(INSTRUCT_LEVEL, "INSTRUCT")
+
+def instruct(self, message, *args, **kws):
+    if self.isEnabledFor(INSTRUCT_LEVEL):
+        self._log(INSTRUCT_LEVEL, message, args, **kws)
+logging.Logger.instruct = instruct
+
+# ─── Colored logging ──────────────────────────────────────────────────────────
+
+class _ColorFormatter(logging.Formatter):
+    """
+    A stderr formatter that prefixes each record with a fixed-width, ANSI-
+    colored level indicator and the logger name (used as the component tag).
+
+    Example output:
+      20:03:51  INFO   wakeword  listening for wake phrase  model=hey_mycroft threshold=0.5
+    """
+
+    _RESET  = "\033[0m"
+    _BOLD   = "\033[1m"
+
+    _LEVEL_STYLES: dict[int, str] = {
+        logging.DEBUG:    "\033[36m",        # cyan
+        logging.INFO:     "\033[32m",        # green
+        INSTRUCT_LEVEL:   "\033[34m",        # blue
+        logging.WARNING:  "\033[33m",        # yellow
+        logging.ERROR:    "\033[31m",        # red
+        logging.CRITICAL: "\033[1;31m",      # bold red
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        color  = self._LEVEL_STYLES.get(record.levelno, "")
+        level  = f"{color}{record.levelname:<8}{self._RESET}"
+        time_s = self.formatTime(record, datefmt="%H:%M:%S")
+        msg    = record.getMessage()
+
+        # Extra key=value pairs attached via the `extra` dict or logger.xxx(…, key=val).
+        extras = ""
+        skip = {"name", "msg", "args", "levelname", "levelno", "pathname",
+                "filename", "module", "exc_info", "exc_text", "stack_info",
+                "lineno", "funcName", "created", "msecs", "relativeCreated",
+                "thread", "threadName", "processName", "process", "taskName",
+                "message"}
+        kv_pairs = [
+            f"\033[2m{k}=\033[0m{v!r}"
+            for k, v in record.__dict__.items()
+            if k not in skip
+        ]
+        if kv_pairs:
+            extras = "  " + "  ".join(kv_pairs)
+
+        tag = f"\033[2m{record.name}\033[0m"
+        return f"{time_s}  {level}  {tag}  {msg}{extras}"
+
+
+def _setup_logging() -> logging.Logger:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(_ColorFormatter())
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    return logging.getLogger("wakeword")
+
+
+log = _setup_logging()
+
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SAMPLE_RATE = 16_000      # Hz — must match Aximo + Go VAD
-CHUNK_SAMPLES = 1_280     # 80ms at 16kHz — openWakeWord's recommended chunk size
-CHANNELS = 1
+SAMPLE_RATE    = 16_000   # Hz — must match Aximo + Go VAD
+CHUNK_SAMPLES  = 1_280    # 80ms at 16kHz — openWakeWord's recommended chunk size
+CHANNELS       = 1
 
 # ─── State ────────────────────────────────────────────────────────────────────
 
@@ -77,8 +158,7 @@ def _stdin_reader() -> None:
         elif cmd == "":
             pass  # blank line — ignore
         else:
-            # Unknown command — log to stderr (not stdout, which is the IPC channel).
-            print(f"[wakeword] unknown command: {cmd!r}", file=sys.stderr, flush=True)
+            log.warning("unknown command from Go: %s", repr(cmd))
 
     # stdin closed (Go process exited) — signal shutdown.
     _stop.set()
@@ -112,20 +192,21 @@ def main() -> None:
 
     # ── Load model ──────────────────────────────────────────────────────────
     if model_path:
-        print(f"[wakeword] loading model: {model_path}", file=sys.stderr, flush=True)
+        log.info("loading model", extra={"path": model_path})
         oww = OWWModel(wakeword_models=[model_path], inference_framework="onnx")
         model_key = list(oww.models.keys())[0]
+        # Just guessing the phrase from the filename roughly if it's a custom model
+        log.instruct(f"model loaded, try saying '{model_key.replace('_', ' ')}' to wake the assistant")
     else:
-        print(
-            "[wakeword] ⚠ No --model specified. Using 'hey_mycroft' stock placeholder.\n"
-            "          Accuracy for 'Hey Linus' will be poor until a real model is trained.",
-            file=sys.stderr,
-            flush=True,
+        log.warning(
+            "no --model specified — using 'hey_mycroft' stock placeholder; "
+            "accuracy for 'Hey Linus' will be poor until a real model is trained"
         )
         oww = OWWModel(wakeword_models=["hey_mycroft"], inference_framework="onnx")
         model_key = "hey_mycroft"
+        log.instruct("💡 SAY: 'Hey Mycroft' to wake the assistant")
 
-    print(f"[wakeword] model key={model_key!r} threshold={threshold}", file=sys.stderr, flush=True)
+    log.info("model ready", extra={"key": model_key, "threshold": threshold})
 
     # ── Start stdin reader thread ────────────────────────────────────────────
     t = threading.Thread(target=_stdin_reader, daemon=True)
@@ -137,10 +218,10 @@ def main() -> None:
     def audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
         """sounddevice callback — copies mic data into audio_buffer."""
         if status:
-            print(f"[wakeword] audio status: {status}", file=sys.stderr, flush=True)
+            log.warning("audio status", extra={"status": str(status)})
         audio_buffer[:] = indata[:, 0]
 
-    print("[wakeword] opening audio stream", file=sys.stderr, flush=True)
+    log.info("opening audio stream and listening for wake phrase")
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -149,8 +230,6 @@ def main() -> None:
         blocksize=CHUNK_SAMPLES,
         callback=audio_callback,
     ) as stream:
-
-        print("[wakeword] listening for wake phrase", file=sys.stderr, flush=True)
 
         while not _stop.is_set():
             if _paused.is_set():
@@ -177,6 +256,8 @@ def main() -> None:
                 # 2. Set paused so the loop stays suspended until RESUME.
                 _paused.set()
 
+                log.info("wake phrase detected", extra={"score": f"{score:.3f}"})
+
                 # 3. Signal Go.
                 print("DETECTED", flush=True)
 
@@ -189,7 +270,7 @@ def main() -> None:
             # check it at a reasonable rate.
             time.sleep(0.01)
 
-    print("[wakeword] exiting", file=sys.stderr, flush=True)
+    log.info("exiting")
 
 
 if __name__ == "__main__":
