@@ -39,14 +39,13 @@ License note:
 
 import argparse
 import logging
+import queue
 import sys
 import threading
 import time
 
 import numpy as np
 import sounddevice as sd
-import openwakeword.utils
-openwakeword.utils.download_models()  # check current signature — may accept a framework or model-list arg
 
 try:
     from openwakeword.model import Model as OWWModel
@@ -212,7 +211,6 @@ def main() -> None:
     t = threading.Thread(target=_stdin_reader, daemon=True)
     t.start()
 
-    import queue
     audio_queue = queue.Queue()
 
     def audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
