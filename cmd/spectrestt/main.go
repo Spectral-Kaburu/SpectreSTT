@@ -21,6 +21,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/lmittmann/tint"
 
 	"github.com/Spectral-Kaburu/SpectreSTT/config"
 	"github.com/Spectral-Kaburu/SpectreSTT/pipeline"
@@ -30,9 +33,11 @@ func main() {
 	configPath := flag.String("config", "spectrestt.json", "path to config file")
 	flag.Parse()
 
-	// Structured JSON logging to stderr.
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+	// Colored, human-readable structured logging to stderr.
+	// Switch to slog.NewJSONHandler when piping to a log aggregator.
+	logger := slog.New(tint.NewHandler(os.Stderr, &tint.Options{
+		Level:      slog.LevelInfo,
+		TimeFormat: time.TimeOnly,
 	}))
 	slog.SetDefault(logger)
 
