@@ -28,12 +28,12 @@ import (
 // transcriptionResponse is the JSON body returned by POST /v1/transcriptions
 // on success.
 type transcriptionResponse struct {
-	Text             string  `json:"text"`
-	Segments         []any   `json:"segments"`
-	DetectedLanguage *string `json:"detected_language"`
-	Engine           string  `json:"engine"`
-	DurationMs       int64   `json:"duration_ms"`
-	ProcessingMs     int64   `json:"processing_ms"`
+	Text             string            `json:"text"`
+	Segments         []json.RawMessage `json:"segments"`
+	DetectedLanguage *string           `json:"detected_language"`
+	Engine           string            `json:"engine"`
+	DurationMs       int64             `json:"duration_ms"`
+	ProcessingMs     int64             `json:"processing_ms"`
 }
 
 // healthReadyResponse is the JSON body returned by GET /health/ready on 503.
